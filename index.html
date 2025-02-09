@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Live Audio Streaming</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/lamejs/1.2.0/lame.min.js"></script>
+  <style>
+    button { margin: 5px; padding: 10px 20px; }
+  </style>
+</head>
+<body>
+
+<audio id="liveAudio" controls autoplay></audio>
+<button id="connectButton">Connect</button>
+
+<script>
+  let audioContext;
+  let ws;
+  let isConnected = false;
+  let audioQueue = [];
+  let nextStartTime = 0;
+
+  document.getElementById("connectButton").addEventListener("click", connectWebSocket);
+
+  function connectWebSocket() {
+    if (isConnected) {
+      console.log("Already connected. Ignoring duplicate connect request.");
+      return;
+    }
+
+    isConnected = true;
+
+    if (!audioContext) {
+      initAudioContext();
+    }
+
+    const url = "ws://" + window.location.hostname + ":8765";
+    ws = new WebSocket(url);
+    ws.binaryType = "arraybuffer";
+
+    ws.onmessage = (event) => {
+      if (event.data.byteLength === 4096) {
+        audioQueue.push(event.data);
+        if (audioQueue.length === 1) {
+          processAudioQueue(); // Start processing when the first chunk arrives
+        }
+      }
+    };
+
+    ws.onclose = () => {
+      console.log("WebSocket closed. Reconnecting...");
+      isConnected = false;
+      setTimeout(connectWebSocket, 1000);
+    };
+  }
+
+  function initAudioContext() {
+    if (audioContext) {
+      console.log("Audio context already initialized.");
+      return;
+    }
+
+    audioContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 44100 });
+    document.getElementById("liveAudio").srcObject = audioContext.createMediaStreamDestination().stream;
+    nextStartTime = audioContext.currentTime; // Initialize start time
+  }
+
+  function processAudioQueue() {
+    if (!audioContext || audioQueue.length === 0) return;
+
+    const chunk = audioQueue.shift();
+    const buffer = audioContext.createBuffer(2, 1024, 44100);
+    const leftChannel = buffer.getChannelData(0);
+    const rightChannel = buffer.getChannelData(1);
+    const dataView = new DataView(chunk);
+
+    for (let i = 0; i < 1024; i++) {
+      leftChannel[i] = dataView.getInt16(i * 4, true) / 32768;
+      rightChannel[i] = dataView.getInt16(i * 4 + 2, true) / 32768;
+    }
+
+    const source = audioContext.createBufferSource();
+    source.buffer = buffer;
+    source.connect(audioContext.destination);
+
+    // Schedule playback to ensure continuous streaming
+    if (nextStartTime < audioContext.currentTime) {
+      nextStartTime = audioContext.currentTime + 0.05; // Add slight delay to avoid underruns
+    }
+    source.start(nextStartTime);
+    nextStartTime += buffer.duration; // Ensure continuous playback
+
+    // Process the next chunk with a slight delay
+    setTimeout(processAudioQueue, buffer.duration * 1000);
+  }
+</script>
+
+</body>
+</html>
